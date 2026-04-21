@@ -98,6 +98,81 @@ function automatic void ref_model(
                 end
 endfunction
 
+task automatic run_test(
+        input string                  test_name,
+        input logic [DATA_WIDTH-1:0]  A [N][N],
+        input logic [DATA_WIDTH-1:0]  B [N][N]
+);
+        logic [ACCUM_WIDTH-1:0] expected [N][N];
+        logic [ACCUM_WIDTH-1:0] got      [N][N];
+        int errors;
+
+        $display("\n========================================");
+        $display("TEST: %s", test_name);
+        $display("========================================");
+
+        // compute expected result
+        ref_model(A, B, expected);
+
+        // reset
+        rst_n            <= 0;
+        start            <= 0;
+        valid_in_upstream <= 0;
+        a_in             <= '0;
+        b_in             <= '0;
+        repeat(4) @(posedge clk);
+        rst_n <= 1;
+        @(posedge clk);
+
+        // pulse start
+        start <= 1;
+        @(posedge clk);
+        start <= 0;
+
+        // feed N cycles of data \u2014 one column of A and one row of B per cycle
+        // a_in carries row-wise data (all rows, one element per row per cycle)
+        // b_in carries col-wise data (all cols, one element per col per cycle)
+        for (int cycle = 0; cycle < N; cycle++) begin
+                @(posedge clk);
+                valid_in_upstream <= 1;
+                // feed column 'cycle' of A into a_in lanes
+                for (int row = 0; row < N; row++)
+                        a_in[row*DATA_WIDTH +: DATA_WIDTH] <= A[row][cycle];
+                // feed row 'cycle' of B into b_in lanes
+                for (int col = 0; col < N; col++)
+                        b_in[col*DATA_WIDTH +: DATA_WIDTH] <= B[cycle][col];
+        end
+
+        @(posedge clk);
+        valid_in_upstream <= 0;
+        a_in              <= '0;
+        b_in              <= '0;
+
+        // wait for result_valid
+        wait (result_valid === 1'b1);
+        @(posedge clk);
+
+        // unpack and check
+        unpack_result(result, got);
+        errors = 0;
+
+        for (int i = 0; i < N; i++) begin
+                for (int j = 0; j < N; j++) begin
+                        if (got[i][j] !== expected[i][j]) begin
+                                $display("  MISMATCH at [%0d][%0d]: got=%0d expected=%0d",
+                                         i, j, got[i][j], expected[i][j]);
+                                errors++;
+                        end
+                end
+        end
+
+        if (errors == 0)
+                $display("  PASS \u2014 all %0d elements match", N*N);
+        else
+                $display("  FAIL \u2014 %0d mismatches", errors);
+
+endtask
+
 initial begin
     $fsdbDumpfile("novas.fsdb");
     $fsdbDumpvars(0, tb_mm_accelerator);
